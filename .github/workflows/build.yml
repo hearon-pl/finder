@@ -1,0 +1,53 @@
+name: Aktualizuj dane findera
+
+on:
+  schedule:
+    # codziennie o 06:15 UTC (~08:15 czasu polskiego latem)
+    # feed IdoSell generuje się ok. 05:58 UTC, więc bierzemy świeży
+    - cron: "15 6 * * *"
+  workflow_dispatch:        # pozwala uruchomić ręcznie przyciskiem "Run workflow"
+
+permissions:
+  contents: write           # potrzebne, żeby workflow mógł zapisać plik do repo
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Pobierz repozytorium
+        uses: actions/checkout@v4
+
+      - name: Ustaw Pythona
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Zbuduj finder-data.json z feedu
+        env:
+          FEED_URL: https://hearon.pl/data/export/feed10000_1ac49ba8bb7cc68dae4994a0.xml
+          ONLY_BRANDS: HEARON        # puste = wszystkie marki
+        run: python build.py
+
+      - name: Zapisz zmiany (jeśli są)
+        id: commit
+        run: |
+          git config user.name "hearon-finder-bot"
+          git config user.email "actions@github.com"
+          git add finder-data.json
+          if git diff --staged --quiet; then
+            echo "Brak zmian w danych — nic do zapisania."
+            echo "changed=false" >> $GITHUB_OUTPUT
+          else
+            git commit -m "Aktualizacja danych findera ($(date -u '+%Y-%m-%d %H:%M UTC'))"
+            git push
+            echo "changed=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Wyczyść cache jsDelivr
+        if: steps.commit.outputs.changed == 'true'
+        run: |
+          # bez tego CDN serwuje starą wersję nawet do 12 godzin
+          sleep 15
+          curl -sS "https://purge.jsdelivr.net/gh/${GITHUB_REPOSITORY}@main/finder-data.json" || true
+          echo ""
+          echo "Cache wyczyszczony."
