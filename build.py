@@ -36,8 +36,12 @@ PODEJRZANE = re.compile(rf"({RODZINY_RE}).*\s[-–]\s.*({RODZINY_RE})", re.I)
 
 # płeć na końcu wartości — obsługujemy oba nazewnictwa naraz,
 # żeby zmiana parametrów w IdoSell mogła iść stopniowo
-GEND = re.compile(r"(wtyk|gniazdo|męski|meski|żeński|zenski)(\s+kątow[ya])?\s*$", re.I)
-MESKIE = {"wtyk", "męski", "meski"}
+# płeć na końcu wartości. Obsługujemy: wtyk/gniazdo, męski/żeński,
+# formy mnogie ("Męskie") i zapis w nawiasie ("(Męskie)").
+GEND = re.compile(
+    r"(?:\(\s*)?(wtyk\w*|gniazd\w*|męsk\w*|mesk\w*|żeńsk\w*|zensk\w*)"
+    r"(\s+kątow[ya])?\s*\)?\s*$", re.I)
+MESKIE_PRE = ("wtyk", "męsk", "mesk")   # początek słowa = rodzaj męski
 # nazewnictwo płci pokazywane klientowi — zmiana tutaj zmienia je wszędzie
 ETYKIETA_PLCI = {"M": "męski", "F": "żeński"}
 NOISE = (
@@ -57,7 +61,11 @@ def kind(v):
     if PODEJRZANE.search(v):
         return None
     vl = v.lower().strip()
-    if vl.startswith("kabel "):
+    # "Kabel ..." w polu złącza to zwykle pomyłka (wpisany typ kabla),
+    # ale odrzucamy tylko wtedy, gdy dalej nie ma nazwy znanego złącza
+    if vl.startswith("kabel ") and not re.search(
+            r"xlr|jack|rca|cinch|speakon|powercon|hdmi|rj45|ethercon|banan|usb"
+            r"|\bdin\b|\bmidi\b|optyczn|toslink|światłow|swiatlow", vl):
         return None
     if any(x in vl for x in NOISE):
         return None
@@ -77,6 +85,14 @@ def kind(v):
         return "powercon"
     if "rj45" in vl or "ethercon" in vl:
         return "rj45"
+    if "usb" in vl:
+        return "usb"
+    # DIN / MIDI — MIDI korzysta ze złącza DIN 5-pin
+    if re.search(r"\bdin\b|\bmidi\b", vl):
+        return "din"
+    # optyczne / Toslink / światłowodowe
+    if re.search(r"optyczn|toslink|optical|światłow|swiatlow", vl):
+        return "optyczne"
     if "speakon" in vl:
         return "speakon"
     if "hdmi" in vl:
@@ -99,6 +115,36 @@ def parse_end(v, k):
         return {"type": "Powercon", "gender": None, "label": "Powercon"}
     if k == "rj45":
         return {"type": "RJ45 / Ethercon", "gender": None, "label": "RJ45 / Ethercon"}
+    if k == "din":
+        piny = "5-pin"
+        m2 = re.search(r"(\d+)\s*[- ]?pin", s, re.I)
+        if m2:
+            piny = m2.group(1) + "-pin"
+        gm2 = GEND.search(s)
+        g = None
+        if gm2:
+            g = "M" if gm2.group(1).lower().startswith(MESKIE_PRE) else "F"
+        gw = ETYKIETA_PLCI.get(g, "")
+        t = "DIN " + piny
+        return {"type": t, "gender": g, "label": (t + ((" " + gw) if gw else "")).strip()}
+    if k == "optyczne":
+        return {"type": "Optyczne (Toslink)", "gender": None, "label": "Optyczne (Toslink)"}
+    if k == "usb":
+        low = s.lower()
+        if "typ c" in low or "type c" in low or "type-c" in low or "usb-c" in low or "usb c" in low:
+            t = "USB-C"
+        elif "micro" in low:
+            t = "micro USB"
+        elif "mini" in low:
+            t = "mini USB"
+        else:
+            t = "USB-A"
+        gm2 = GEND.search(s)
+        g = None
+        if gm2:
+            g = "M" if gm2.group(1).lower().startswith(MESKIE_PRE) else "F"
+        gw = ETYKIETA_PLCI.get(g, "")
+        return {"type": t, "gender": g, "label": (t + ((" " + gw) if gw else "")).strip()}
     if k == "speakon":
         g = "F" if re.search(r"gniazdo|żeńsk|zensk", s, re.I) else ("M" if re.search(r"\bwtyk\b|męsk|mesk", s, re.I) else None)
         return {"type": "Speakon", "gender": g, "label": "Speakon"}
@@ -114,14 +160,34 @@ def parse_end(v, k):
     gm = GEND.search(body)
     gender = None
     if gm:
-        gender = "M" if gm.group(1).lower() in MESKIE else "F"
+        gender = "M" if gm.group(1).lower().startswith(MESKIE_PRE) else "F"
         body = body[:gm.start()].strip()
-    t = re.sub(r"\bTRS stereo\b", "TRS", body)
-    t = re.sub(r"\bTS mono\b", "TS", t).strip()
-    if re.search(r"mini", t, re.I) and re.search(r"xlr", t, re.I):
-        t = "mini XLR 3-pin"
+    # Typ sprowadzamy do ZNANEJ rodziny. Wcześniej brana była surowa reszta
+    # tekstu, co przy niestandardowych zapisach tworzyło fałszywe typy
+    # (np. 'Wtyk Jack 6.3 mm (1/4")'). Nieznane wartości odrzucamy.
+    bl = body.lower()
+    trs = ("trs" in bl) or ("stereo" in bl and "mono" not in bl)
+    ts = ("mono" in bl) or re.search(r"\bts\b", bl)
+    if "xlr" in bl:
+        t = "mini XLR 3-pin" if "mini" in bl else "XLR 3-pin"
+    elif "rca" in bl or "cinch" in bl:
+        t = "RCA (cinch)"
+    elif "2,5" in bl or "2.5" in bl:
+        t = "Jack 2,5 mm TRS"
+    elif "3,5" in bl or "3.5" in bl or "mini jack" in bl or "minijack" in bl:
+        if "trrs" in bl:
+            t = "Jack 3,5 mm TRRS"
+        else:
+            t = "Jack 3,5 mm " + ("TS" if (ts and not trs) else "TRS")
+    elif "6,3" in bl or "6.3" in bl or "1/4" in bl or "duży jack" in bl or "duzy jack" in bl:
+        t = "Jack 6,3 mm " + ("TS" if (ts and not trs) else "TRS")
+        if not trs and not ts:
+            NIEDOOKRESLONE.append(body)
+    else:
+        return None        # nieznana rodzina — nie tworzymy fałszywego typu
+
     gw = ETYKIETA_PLCI.get(gender, "")
-    label = (f"{count}× " if count > 1 else "") + body + ((" " + gw) if gw else "") + (" kątowy" if ang else "")
+    label = (f"{count}× " if count > 1 else "") + t + ((" " + gw) if gw else "") + (" kątowy" if ang else "")
     return {"type": t, "gender": gender, "label": label.strip()}
 
 def sig_bucket(s):
@@ -161,6 +227,7 @@ ADAPTER = re.compile(r"adapter|przejściówk|przejsciowk|rozgałęźnik|rozgalez
 
 
 OSTRZEZENIA = []
+NIEDOOKRESLONE = []   # Jack 6,3 bez informacji TS/TRS — domyślnie TRS
 
 
 def rodzaj_produktu(nazwa):
@@ -294,6 +361,11 @@ def parse_products(path):
                 OSTRZEZENIA.append((code, name, wartosc))
 
         ea, eb = parse_end(va, ka), parse_end(vb, kb)
+        if ea is None or eb is None:
+            OSTRZEZENIA.append((code, name, va if ea is None else vb))
+            prod.clear()
+            continue
+
         recs.append({
             "code": code, "group_id": group_id, "name": name, "brand": brand.strip(),
             "ea": ea, "eb": eb,
@@ -344,7 +416,9 @@ def build_data(recs):
 
     TYPE_ORDER = ["XLR 3-pin", "mini XLR 3-pin", "Jack 6,3 mm TRS", "Jack 6,3 mm TS",
                   "Jack 3,5 mm TRS", "Jack 3,5 mm TRRS", "RCA (cinch)", "Speakon",
-                  "Wtyk bananowy", "Powercon", "RJ45 / Ethercon", "HDMI"]
+                  "Wtyk bananowy", "Powercon", "DIN 5-pin", "DIN 3-pin", "DIN 7-pin",
+                  "Optyczne (Toslink)", "USB-C", "micro USB", "mini USB", "USB-A",
+                  "RJ45 / Ethercon", "HDMI"]
     types = sorted(
         {g["aType"] for g in groups.values()} | {g["bType"] for g in groups.values()},
         key=lambda t: TYPE_ORDER.index(t) if t in TYPE_ORDER else 99,
