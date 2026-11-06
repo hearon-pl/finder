@@ -40,7 +40,7 @@ PODEJRZANE = re.compile(rf"({RODZINY_RE}).*\s[-–]\s.*({RODZINY_RE})", re.I)
 # formy mnogie ("Męskie") i zapis w nawiasie ("(Męskie)").
 GEND = re.compile(
     r"(?:\(\s*)?(wtyk\w*|gniazd\w*|męsk\w*|mesk\w*|żeńsk\w*|zensk\w*)"
-    r"(\s+kątow[ya])?\s*\)?\s*$", re.I)
+    r"(\s+kątow[ya])?\s*\)?\s*(?:\([^)]*\))?\s*$", re.I)
 MESKIE_PRE = ("wtyk", "męsk", "mesk")   # początek słowa = rodzaj męski
 # nazewnictwo płci pokazywane klientowi — zmiana tutaj zmienia je wszędzie
 ETYKIETA_PLCI = {"M": "męski", "F": "żeński"}
@@ -67,7 +67,9 @@ def kind(v):
             r"xlr|jack|rca|cinch|speakon|powercon|hdmi|rj45|ethercon|banan|usb"
             r"|\bdin\b|\bmidi\b|optyczn|toslink|światłow|swiatlow", vl):
         return None
-    if any(x in vl for x in NOISE):
+    # szum odrzucamy tylko wtedy, gdy w wartości nie ma nazwy znanego złącza
+    # (inaczej "powerCON IN (niebieskie)" wypadało przez słowo "niebieski")
+    if any(x in vl for x in NOISE) and not re.search(RODZINY_RE, vl):
         return None
     if vl in (
         "złącze z drugiej strony",
