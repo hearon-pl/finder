@@ -283,30 +283,35 @@ def parse_products(path):
         # feedowy URL -> zwykły link do produktu
         url = re.sub(r"\.feed\d+\.html$", ".html", url)
 
-        # cena brutto + ewentualna cena promocyjna.
-        # IdoSell wystawia promocję jako atrybut promotional_gross; gdy jest
-        # niższa od ceny regularnej, to ona jest ceną, którą płaci klient.
+        # Cena i wykrywanie promocji.
+        #
+        # Feed eksportuje w <price gross> AKTUALNĄ cenę sprzedaży — przy
+        # włączonej promocji jest to już cena promocyjna. Atrybutu
+        # promotional_gross ten eksport nie wystawia.
+        #
+        # Promocję rozpoznajemy po cenie Omnibus (najniższa cena z 30 dni
+        # przed obniżką): jeśli jest WYŻSZA od aktualnej, produkt jest
+        # przeceniony — i to ją trzeba pokazać przy obniżce (obowiązek prawny).
         price = None          # cena do zapłaty
-        price_old = None      # cena przed obniżką (do przekreślenia)
+        price_old = None      # najniższa cena z 30 dni przed obniżką
         price_el = prod.find("price")
         if price_el is None:
             price_el = prod.find("./sizes/size/price")
         if price_el is not None:
             try:
-                regular = float(price_el.get("gross"))
+                price = float(price_el.get("gross"))
             except (TypeError, ValueError):
-                regular = None
-            promo = None
+                price = None
+
+        omnibus_el = prod.find("./" + IOFEXT + "omnibus_price_retail/" + IOFEXT + "site")
+        if omnibus_el is not None and price is not None:
             try:
-                pg = price_el.get("promotional_gross")
-                promo = float(pg) if pg else None
+                omnibus = float(omnibus_el.get("gross") or 0)
             except (TypeError, ValueError):
-                promo = None
-            if regular is not None and promo and 0 < promo < regular:
-                price, price_old = promo, regular
-                PROMOCJE.append(name[:60])
-            else:
-                price = regular
+                omnibus = 0
+            if omnibus > price > 0:
+                price_old = omnibus
+                PROMOCJE.append(f"{name[:52]}  {price} zł (było {omnibus} zł)")
 
         # dostępność: bierzemy ze stanu wariantu (<size available="in_stock">)
         dostepny = False
