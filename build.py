@@ -285,15 +285,19 @@ def parse_products(path):
 
         # Cena i wykrywanie promocji.
         #
-        # Feed eksportuje w <price gross> AKTUALNĄ cenę sprzedaży — przy
-        # włączonej promocji jest to już cena promocyjna. Atrybutu
-        # promotional_gross ten eksport nie wystawia.
+        # Feed podaje w <price gross> AKTUALNĄ cenę sprzedaży (przy włączonej
+        # promocji już obniżoną), bez osobnego atrybutu promotional_gross.
         #
-        # Promocję rozpoznajemy po cenie Omnibus (najniższa cena z 30 dni
-        # przed obniżką): jeśli jest WYŻSZA od aktualnej, produkt jest
-        # przeceniony — i to ją trzeba pokazać przy obniżce (obowiązek prawny).
+        # O tym, czy produkt JEST w promocji, decyduje wyłącznie przynależność
+        # do segmentu promocji:
+        #     <iaiext:hotspots><iaiext:site><flag type="promotion" visible="yes"/>
+        # Sama niższa cena niż Omnibus nie wystarcza — oznaczałaby też towary,
+        # którym po prostu obniżono cenę na stałe.
+        #
+        # Flaga jest per produkt, a każda długość to osobny produkt w feedzie,
+        # więc promocja działa na poziomie pojedynczego wariantu.
         price = None          # cena do zapłaty
-        price_old = None      # najniższa cena z 30 dni przed obniżką
+        price_old = None      # najniższa cena z 30 dni przed obniżką (Omnibus)
         price_el = prod.find("price")
         if price_el is None:
             price_el = prod.find("./sizes/size/price")
@@ -303,15 +307,27 @@ def parse_products(path):
             except (TypeError, ValueError):
                 price = None
 
-        omnibus_el = prod.find("./" + IOFEXT + "omnibus_price_retail/" + IOFEXT + "site")
-        if omnibus_el is not None and price is not None:
-            try:
-                omnibus = float(omnibus_el.get("gross") or 0)
-            except (TypeError, ValueError):
-                omnibus = 0
-            if omnibus > price > 0:
-                price_old = omnibus
-                PROMOCJE.append(f"{name[:52]}  {price} zł (było {omnibus} zł)")
+        w_promocji = False
+        for el in prod.iter():
+            if el.tag.split("}")[-1] != "flag":
+                continue
+            if el.get("type") == "promotion" and el.get("visible") == "yes":
+                w_promocji = True
+                break
+
+        if w_promocji and price is not None:
+            omnibus_el = prod.find("./" + IOFEXT + "omnibus_price_retail/" + IOFEXT + "site")
+            if omnibus_el is not None:
+                try:
+                    omnibus = float(omnibus_el.get("gross") or 0)
+                except (TypeError, ValueError):
+                    omnibus = 0
+                if omnibus > price > 0:
+                    price_old = omnibus
+            if price_old is None:
+                price_old = 0      # w promocji, ale bez ceny odniesienia
+            PROMOCJE.append(f"{name[:50]}  {price} zł"
+                            + (f" (najniższa z 30 dni: {price_old} zł)" if price_old else ""))
 
         # dostępność: bierzemy ze stanu wariantu (<size available="in_stock">)
         dostepny = False
@@ -427,7 +443,7 @@ def build_data(recs):
         g["cats"].update(x["cats"])
 
     for g in groups.values():
-        g["promo"] = 1 if any(len(v) > 4 and v[4] for v in g["variants"]) else 0
+        g["promo"] = 1 if any(len(v) > 4 and v[4] is not None for v in g["variants"]) else 0
         g["lengths"].sort()
         g["variants"].sort(key=lambda v: (v[0] or 0))
         # ceny liczymy z wariantów dostępnych; gdy nic nie ma — ze wszystkich
