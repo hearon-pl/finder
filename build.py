@@ -229,6 +229,8 @@ ADAPTER = re.compile(r"adapter|przejściówk|przejsciowk|rozgałęźnik|rozgalez
 
 
 OSTRZEZENIA = []
+
+PROMOCJE = []    # produkty z aktywną ceną promocyjną
 NIEDOOKRESLONE = []   # Jack 6,3 bez informacji TS/TRS — domyślnie TRS
 
 
@@ -281,14 +283,30 @@ def parse_products(path):
         # feedowy URL -> zwykły link do produktu
         url = re.sub(r"\.feed\d+\.html$", ".html", url)
 
-        # cena brutto
-        price = None
+        # cena brutto + ewentualna cena promocyjna.
+        # IdoSell wystawia promocję jako atrybut promotional_gross; gdy jest
+        # niższa od ceny regularnej, to ona jest ceną, którą płaci klient.
+        price = None          # cena do zapłaty
+        price_old = None      # cena przed obniżką (do przekreślenia)
         price_el = prod.find("price")
+        if price_el is None:
+            price_el = prod.find("./sizes/size/price")
         if price_el is not None:
             try:
-                price = float(price_el.get("gross"))
+                regular = float(price_el.get("gross"))
             except (TypeError, ValueError):
-                price = None
+                regular = None
+            promo = None
+            try:
+                pg = price_el.get("promotional_gross")
+                promo = float(pg) if pg else None
+            except (TypeError, ValueError):
+                promo = None
+            if regular is not None and promo and 0 < promo < regular:
+                price, price_old = promo, regular
+                PROMOCJE.append(name[:60])
+            else:
+                price = regular
 
         # dostępność: bierzemy ze stanu wariantu (<size available="in_stock">)
         dostepny = False
@@ -373,7 +391,7 @@ def parse_products(path):
             "ea": ea, "eb": eb,
             "sig": sig_bucket(params.get("Typ sygnału", "")),
             "len": parse_len(params, name),
-            "price": price, "url": url, "img": img, "ok": dostepny,
+            "price": price, "price_old": price_old, "url": url, "img": img, "ok": dostepny,
             "cats": cats_from_menu(menu_paths),
             "rodzaj": rodzaj_produktu(name),
         })
@@ -399,10 +417,12 @@ def build_data(recs):
             g["lengths"].append(x["len"])
         if not g["img"] and x["img"]:
             g["img"] = x["img"]
-        g["variants"].append([x["len"], x["price"], x["url"], 1 if x["ok"] else 0])
+        g["variants"].append([x["len"], x["price"], x["url"], 1 if x["ok"] else 0,
+                              x["price_old"]])
         g["cats"].update(x["cats"])
 
     for g in groups.values():
+        g["promo"] = 1 if any(len(v) > 4 and v[4] for v in g["variants"]) else 0
         g["lengths"].sort()
         g["variants"].sort(key=lambda v: (v[0] or 0))
         # ceny liczymy z wariantów dostępnych; gdy nic nie ma — ze wszystkich
@@ -442,7 +462,7 @@ def build_data(recs):
 
     keep = ("name", "brand", "aType", "aGender", "aLabel", "bType", "bGender",
             "bLabel", "sig", "lengths", "price_min", "price_max", "url", "cats", "img",
-            "variants", "any", "rodzaj")
+            "variants", "any", "rodzaj", "promo")
     return {
         "generated": __import__("datetime").datetime.now().isoformat(timespec="seconds"),
         "url_prefix": PREFIX,
@@ -471,6 +491,15 @@ def main():
             print(f"  [{kod}] {nazwa[:60]}")
             print(f"        wartość: {wart!r}  <- wygląda na opis kabla, nie na złącze")
         print()
+
+    if PROMOCJE:
+        print(f"\nProdukty z ceną promocyjną: {len(PROMOCJE)}")
+        for kod in PROMOCJE[:15]:
+            print(f"  {kod}")
+    else:
+        print("\nUWAGA: feed nie zawiera żadnej ceny promocyjnej "
+              "(atrybut promotional_gross). Jeśli w sklepie trwa promocja, "
+              "finder pokaże ceny regularne — sprawdź ustawienia eksportu.")
 
     print(f"Zapisano {OUT_FILE}: {len(data['products'])} rodzin, "
           f"{len(data['types'])} typów złączy, {size/1024:.0f} KB")
