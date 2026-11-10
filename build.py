@@ -82,6 +82,13 @@ def kind(v):
         return None
     if "banan" in vl:
         return "banan"
+    # wtyk/gniazdo sieciowe Schuko (także pisane "Shuko", "Szuko"; CEE 7/4, 7/7)
+    if re.search(r"schuko|shuko|szuko|cee\s*7/[47]", vl):
+        return "schuko"
+    # DMX — oświetlenie sceniczne; to złącze XLR 5-pin albo 3-pin, ale w findera
+    # traktujemy je jako osobne typy, żeby odróżnić je od XLR audio
+    if re.search(r"\bdmx\b", vl):
+        return "dmx"
     if ("powercon" in vl or "zasilania sieciowego" in vl
             or "zasilające sieciowe" in vl or "iec c13" in vl or "iec c14" in vl):
         return "powercon"
@@ -104,7 +111,7 @@ def kind(v):
     return None
 
 # złącza typowo symetryczne: jedna wartość = ten sam wtyk na obu końcach
-SYMM = {"banan", "powercon", "rj45", "speakon"}
+SYMM = {"banan", "powercon", "rj45", "speakon", "dmx"}
 
 def parse_end(v, k):
     """Rozkłada wartość złącza na typ (do selektora), płeć i etykietę (do wyniku)."""
@@ -147,6 +154,21 @@ def parse_end(v, k):
             g = "M" if gm2.group(1).lower().startswith(MESKIE_PRE) else "F"
         gw = ETYKIETA_PLCI.get(g, "")
         return {"type": t, "gender": g, "label": (t + ((" " + gw) if gw else "")).strip()}
+    if k in ("schuko", "dmx"):
+        g = "F" if re.search(r"gniazd|żeńsk|zensk", s, re.I) else (
+            "M" if re.search(r"wtyk|męsk|mesk", s, re.I) else None)
+        gw = ETYKIETA_PLCI.get(g, "")
+        if k == "schuko":
+            ang = bool(re.search(r"kątow", s, re.I))
+            etyk = "Schuko" + ((" " + gw) if gw else "") + (" kątowy" if ang else "")
+            return {"type": "Schuko", "gender": g, "label": etyk}
+        m_pin = re.search(r"(\d)\s*[- ]?\s*(?:pin|pol|biegun)", s, re.I)
+        if m_pin:
+            t = "DMX 3-pin" if m_pin.group(1) == "3" else "DMX 5-pin"
+        else:
+            t = "DMX 5-pin"             # standard DMX512; wartość bez liczby pinów to zwykle 5-pin
+            NIEDOOKRESLONE.append("DMX bez liczby pinów (przyjęto 5-pin): " + s)
+        return {"type": t, "gender": g, "label": (t + ((" " + gw) if gw else "")).strip()}
     if k == "speakon":
         g = "F" if re.search(r"gniazdo|żeńsk|zensk", s, re.I) else ("M" if re.search(r"\bwtyk\b|męsk|mesk", s, re.I) else None)
         return {"type": "Speakon", "gender": g, "label": "Speakon"}
@@ -171,7 +193,14 @@ def parse_end(v, k):
     trs = ("trs" in bl) or ("stereo" in bl and "mono" not in bl)
     ts = ("mono" in bl) or re.search(r"\bts\b", bl)
     if "xlr" in bl:
-        t = "mini XLR 3-pin" if "mini" in bl else "XLR 3-pin"
+        m_pin = re.search(r"(\d)\s*[- ]?\s*(?:pin|pol|biegun)", bl)
+        piny = m_pin.group(1) if m_pin else None
+        if piny == "5":
+            t = "DMX 5-pin"             # fizycznie to samo złącze co DMX 5-pin
+        elif piny and piny != "3":
+            return None                 # XLR 4/6/7-pin — nie mamy takiego typu, nie udajemy XLR 3-pin
+        else:
+            t = "mini XLR 3-pin" if "mini" in bl else "XLR 3-pin"
     elif "rca" in bl or "cinch" in bl:
         t = "RCA (cinch)"
     elif "2,5" in bl or "2.5" in bl:
@@ -457,9 +486,9 @@ def build_data(recs):
         g["name"] = re.sub(r"\s*\d+([,\.]\d+)?\s*m\b", "", g["name"], flags=re.I).strip(" -–")
         g["cats"] = sorted(g["cats"])
 
-    TYPE_ORDER = ["XLR 3-pin", "mini XLR 3-pin", "Jack 6,3 mm TRS", "Jack 6,3 mm TS",
+    TYPE_ORDER = ["XLR 3-pin", "mini XLR 3-pin", "DMX 5-pin", "DMX 3-pin", "Jack 6,3 mm TRS", "Jack 6,3 mm TS",
                   "Jack 3,5 mm TRS", "Jack 3,5 mm TRRS", "RCA (cinch)", "Speakon",
-                  "Wtyk bananowy", "Powercon", "DIN 5-pin", "DIN 3-pin", "DIN 7-pin",
+                  "Wtyk bananowy", "Powercon", "Schuko", "DIN 5-pin", "DIN 3-pin", "DIN 7-pin",
                   "Optyczne (Toslink)", "USB-C", "micro USB", "mini USB", "USB-A",
                   "RJ45 / Ethercon", "HDMI"]
     types = sorted(
