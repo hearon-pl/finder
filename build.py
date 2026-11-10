@@ -263,6 +263,23 @@ PROMOCJE = []    # produkty z aktywną ceną promocyjną
 NIEDOOKRESLONE = []   # Jack 6,3 bez informacji TS/TRS — domyślnie TRS
 
 
+# DMX rozpoznajemy po TYTULE produktu, nie po parametrach. W parametrach kabel DMX
+# ma zwykły "XLR 3-pin męski / żeński" (i słusznie), a DMX stoi w nazwie
+# ("Kabel DMX XLR 3-pin 110 Ohm..."). Parametr "Typ sygnału" wspominający DMX
+# (np. adapter "kompatybilny z DMX") NIE jest brany pod uwagę.
+DMX_W_TYTULE = re.compile(r"\bdmx", re.I)
+
+
+def dmx_z_xlr(e):
+    """Dla produktu z DMX w tytule końcówki XLR 3-pin stają się DMX 3-pin.
+    (XLR 5-pin jest już rozpoznawany jako DMX 5-pin w parse_end.)"""
+    if e and e["type"] == "XLR 3-pin":
+        e = dict(e)
+        e["type"] = "DMX 3-pin"
+        e["label"] = e["label"].replace("XLR 3-pin", "DMX 3-pin")
+    return e
+
+
 def rodzaj_produktu(nazwa):
     return "Adapter" if ADAPTER.search(nazwa or "") else "Kabel"
 
@@ -435,6 +452,9 @@ def parse_products(path):
             OSTRZEZENIA.append((code, name, va if ea is None else vb))
             prod.clear()
             continue
+
+        if DMX_W_TYTULE.search(name or ""):
+            ea, eb = dmx_z_xlr(ea), dmx_z_xlr(eb)
 
         recs.append({
             "code": code, "group_id": group_id, "name": name, "brand": brand.strip(),
