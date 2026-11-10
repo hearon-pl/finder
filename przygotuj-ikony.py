@@ -5,8 +5,12 @@ HEARON — przygotowanie ikon złączy do findera.
 
 Bierze surowe rendery (duże PNG z przezroczystością) i robi z nich
 spójny komplet ikon: przycięcie w miejscu, gdzie kabel wchodzi w złącze,
-kwadratowy kadr, jednakowy margines, skala wg realnej wielkości złącza,
-eksport do WebP (lekkie) i PNG (zapas).
+prostowanie osi złącza do poziomu (końcówka po prawej), poziomy kadr 2:1,
+jednakowy margines, skala wg realnej wielkości złącza, eksport do WebP.
+
+Skrypt jest dla RENDERÓW z przezroczystym tłem, w których kabel wchodzi
+z lewej strony. Zdjęcia na białym tle (np. HDMI, Speakon, Ethercon)
+wymagają wcześniej wycięcia tła i obrysowania wtyku — tego skrypt nie robi.
 
 Użycie:
     python3 przygotuj-ikony.py plik1.png plik2.png ...
@@ -20,15 +24,16 @@ import io
 import os
 import sys
 import glob
+import math
 import numpy as np
 from PIL import Image
 
 KATALOG_WEJSCIOWY = "/mnt/user-data/uploads"
 KATALOG_WYJSCIOWY = "/mnt/user-data/outputs/ikony"
 
-ROZMIAR = 280          # px, plik źródłowy (2,7x względem wyświetlanych 104 px)
-MARGINES = 0.09        # margines wokół obiektu
-JAKOSC_WEBP = 85
+SZER, WYS = 560, 280   # px, kadr 2:1 (ok. 2,7x względem wyświetlanej wysokości 92 px)
+PAD = 0.06             # margines wokół obiektu
+JAKOSC_WEBP = 86
 
 # rozpoznanie typu po fragmencie nazwy pliku (małe litery)
 # UWAGA: wzorce bardziej szczegółowe MUSZĄ być wyżej niż ogólne,
@@ -54,7 +59,12 @@ MAPA_NAZW = [
     # --- warianty 4-stykowe ---
     ("trrs",           "jack-35-trrs"),
     # --- reszta ---
+    # UWAGA: render żeńskiego XLR 3-pin służy jako ikona DMX 3-pin.
+    # Musi stać PRZED "xlr-001", inaczej nadpisałby ikonę męskiego XLR.
+    ("xlr-001-female",  "dmx-3pin"),
     ("xlr-001",        "xlr-3pin"),
+    ("schuko",         "schuko"),
+    ("欧式插头",          "schuko"),
     ("mini",           "mini-xlr-3pin"),
     ("xlr",            "xlr-3pin"),
     ("35mm",           "jack-35-trs"),
@@ -84,6 +94,9 @@ MAPA_NAZW = [
 # ale nie znikały w siatce.
 SKALA = {
     "xlr-3pin":       1.00,   # ~19 mm
+    "dmx-3pin":       1.00,
+    "dmx-5pin":       1.00,
+    "schuko":         1.00,
     "speakon":        1.00,   # ~22 mm
     "powercon":       1.00,   # ~22 mm
     "hdmi":           0.86,
@@ -153,6 +166,26 @@ def przytnij(im):
     return im.crop(bb) if bb else im
 
 
+def kat_osi(im):
+    """nachylenie osi obiektu (regresja po przezroczystości), w stopniach"""
+    a = np.array(im.getchannel("A"))
+    ys, xs = np.nonzero(a > 16)
+    if len(xs) < 10:
+        return 0.0
+    return math.degrees(math.atan(np.polyfit(xs, ys, 1)[0]))
+
+
+def poziomo(im, szer, wys, pad=PAD):
+    """prostuje złącze do poziomu i wpisuje w kadr szer x wys"""
+    im = przytnij(im.rotate(kat_osi(im), resample=Image.BICUBIC, expand=True))
+    w, h = im.size
+    sk = min(szer * (1 - 2 * pad) / w, wys * (1 - 2 * pad) / h)
+    im = im.resize((max(int(w * sk), 1), max(int(h * sk), 1)), Image.LANCZOS)
+    o = Image.new("RGBA", (szer, wys), (0, 0, 0, 0))
+    o.paste(im, ((szer - im.size[0]) // 2, (wys - im.size[1]) // 2), im)
+    return o
+
+
 def przygotuj(sciezka):
     nazwa = nazwa_wyjsciowa(sciezka)
     skala = SKALA.get(nazwa, 1.0)
@@ -161,27 +194,16 @@ def przygotuj(sciezka):
     cut = punkt_ciecia(im)
     im = przytnij(im.crop((cut, 0, im.size[0], im.size[1])))
 
-    # kwadrat + margines
-    w, h = im.size
-    s = max(w, h)
-    plotno = Image.new("RGBA", (s, s), (0, 0, 0, 0))
-    plotno.paste(im, ((s - w) // 2, (s - h) // 2), im)
-    m = int(s * MARGINES)
-    plotno2 = Image.new("RGBA", (s + 2 * m, s + 2 * m), (0, 0, 0, 0))
-    plotno2.paste(plotno, (m, m), plotno)
-
-    # skala wg reguły wielkości
-    docelowy = int(ROZMIAR * skala)
-    zmniejszony = plotno2.resize((docelowy, docelowy), Image.LANCZOS)
-    finalny = Image.new("RGBA", (ROZMIAR, ROZMIAR), (0, 0, 0, 0))
-    przesun = (ROZMIAR - docelowy) // 2
-    finalny.paste(zmniejszony, (przesun, przesun), zmniejszony)
+    # kadr poziomy 2:1, a potem skala wg reguły wielkości
+    pelny = poziomo(im, SZER, WYS)
+    dw, dh = int(SZER * skala), int(WYS * skala)
+    maly = pelny.resize((dw, dh), Image.LANCZOS)
+    finalny = Image.new("RGBA", (SZER, WYS), (0, 0, 0, 0))
+    finalny.paste(maly, ((SZER - dw) // 2, (WYS - dh) // 2), maly)
 
     os.makedirs(KATALOG_WYJSCIOWY, exist_ok=True)
     p_webp = os.path.join(KATALOG_WYJSCIOWY, nazwa + ".webp")
-    p_png = os.path.join(KATALOG_WYJSCIOWY, nazwa + ".png")
     finalny.save(p_webp, "WEBP", quality=JAKOSC_WEBP, method=6)
-    finalny.save(p_png, "PNG", optimize=True)
     return nazwa, skala, os.path.getsize(p_webp) / 1024
 
 
